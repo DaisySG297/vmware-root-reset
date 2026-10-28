@@ -1,0 +1,12 @@
+# 调试过程产生的临时文件（含敏感信息）
+*.png
+*.txt
+temppass.txt
+_*
+
+# Python
+__pycache__/
+*.pyc
+
+# 应急盘镜像
+*.iso
