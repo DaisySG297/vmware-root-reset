@@ -1,11 +1,14 @@
-# VMware 虚拟机忘记 root 密码？一分钟重置
+# VMware 虚拟机：重置 root 密码 / 开启 root 账号
 
 > 适用于：VMware Workstation / Player 里跑的各种 Linux 虚拟机（Ubuntu / Debian / CentOS 等都行）。
-> 原理很简单：借一张应急启动盘，绕过系统直接改掉密码文件。
+>
+> 两种场景，按你的处境选一个：
+> - **还能登录** → 直接看「场景二」，一条 `sudo passwd root` 搞定；
+> - **完全登不进** → 看「场景一」，借应急启动盘从外部改密码。
 
 ---
 
-## 一句话原理
+## 应急盘方案原理（场景一专属）
 
 虚拟机的硬盘就是本机上的一个大文件。我们**不碰正常系统**，而是用一个「应急系统」（SystemRescue 启动盘）启动虚拟机，然后把正常系统的硬盘「挂载」进来，直接改写里面的密码文件。改完关机、拔掉应急盘、正常开机，密码就变成你设的新密码了。
 
@@ -13,7 +16,7 @@
 
 ---
 
-## 需要准备什么
+## 需要准备什么（场景一）
 
 1. 一台 Windows 主机（装了 VMware Workstation）
 2. 一张应急启动盘镜像：**SystemRescue**（约 1.3 GB，官方免费下载）
@@ -43,6 +46,62 @@
 好消息：`chpasswd` 一条命令就能**同时「解锁 + 设密码」**；只有「root 行完全不存在」才需要先 `useradd` 补建（第 3 步会讲）。
 
 ---
+
+## 场景二：系统还能登录，只想在系统里开 root
+
+如果你**还能用某个普通用户正常登录**（知道密码、能 sudo），那根本不用应急盘，一条命令就开好 root 了：
+
+```bash
+sudo passwd root
+```
+
+它会先让你输入当前用户的 sudo 密码，再让你给 root 设一个新密码（输两遍）。这一条命令**同时完成「解锁 + 设密码」**，改完 root 就能用了。
+
+### 几个配套要点
+
+**1. 只是想要 root 权限，不一定要真的开 root 账号**
+
+日常用 `sudo -i`（或 `sudo -s`）就能临时切到 root 权限，用完退出。很多时候这比长期开着一个能密码登录的 root 更安全：
+
+```bash
+sudo -i      # 直接进入 root shell
+# 干完事
+exit         # 退回普通用户
+```
+
+**2. 想让 root 能通过 SSH 直接登录**
+
+Ubuntu 默认 `PermitRootLogin prohibit-password`（禁止 root 用密码 SSH，只允许密钥）。开了密码后还要改 SSH 配置：
+
+```bash
+sudo sed -i 's/^#\?PermitRootLogin.*/PermitRootLogin yes/' /etc/ssh/sshd_config
+sudo systemctl restart ssh
+```
+
+> ⚠️ 这一步会降低安全性：root + 密码 + 公网可达的 22 端口，很容易被爆破。只在内网用，或改成强密码。
+
+**3. 锁定 / 重新关闭 root（反向操作）**
+
+如果哪天想关掉 root 密码登录（恢复 Ubuntu 默认的锁定态）：
+
+```bash
+sudo passwd -l root          # 锁定 root，禁止密码登录
+```
+
+**4. root 账号压根不存在（极少数）**
+
+如果 `sudo passwd root` 报「用户不存在」，说明 `/etc/passwd` 里没 root，先补建再设密码：
+
+```bash
+sudo useradd -m -s /bin/bash root
+sudo passwd root
+```
+
+---
+
+## 场景一：完全登不进去，靠应急盘重置
+
+> 下面的「三步走」就是应急盘方案，适合你**连普通用户密码都忘了**、只能从外部硬改密码文件的情况。
 
 ## 三步走
 
@@ -155,7 +214,7 @@ python vnc_send.py --server 127.0.0.1::5901 --command "mount /dev/sda2 /mnt"
 | 改了密码但登录失败 | 键盘注入把大写/数字发错了 | 用 `force_caps=True`（见脚本） |
 | 应急盘没启动 | `.vmx` 里少了 `present` 行 | 五行配置补齐 |
 | 抢不到 GRUB 菜单 | 部分发行版 GRUB 超时设为 0 | 别抢菜单，直接用应急盘 |
-| **改完 root 还是登不上** | **系统默认没开 root（被锁或不存在）** | **先 `grep '^root:' /mnt/etc/shadow` 看状态，用 chpasswd 解锁，缺条目就 useradd 补建** |
+| **改完 root 还是登不上** | **系统默认没开 root（被锁或不存在）** | 能登录就直接 `sudo passwd root`；进不去才用应急盘：`grep '^root:' /mnt/etc/shadow` 看状态，chpasswd 解锁，缺条目 useradd 补建 |
 | root 能本机登录但 SSH 上不去 | 系统默认禁止 root 用密码 SSH | 改 sshd_config 的 `PermitRootLogin` |
 
 ---
