@@ -2,9 +2,10 @@
 
 > 适用于：VMware Workstation / Player 里跑的各种 Linux 虚拟机（Ubuntu / Debian / CentOS 等都行）。
 >
-> 两种场景，按你的处境选一个：
-> - **还能登录** → 直接看「场景二」，一条 `sudo passwd root` 搞定；
-> - **完全登不进** → 看「场景一」，借应急启动盘从外部改密码。
+> 按你的处境选一个场景：
+> - **能登录，只想开 root** → 看「场景二」，一条 `sudo passwd root` 搞定；
+> - **完全登不进** → 看「场景一」，借应急启动盘从外部改密码；
+> - **root 密码对了但 SSH 登不上** → 看「场景三」，是 Ubuntu 的 SSH 默认策略在挡。
 
 ---
 
@@ -71,14 +72,7 @@ exit         # 退回普通用户
 
 **2. 想让 root 能通过 SSH 直接登录**
 
-Ubuntu 默认 `PermitRootLogin prohibit-password`（禁止 root 用密码 SSH，只允许密钥）。开了密码后还要改 SSH 配置：
-
-```bash
-sudo sed -i 's/^#\?PermitRootLogin.*/PermitRootLogin yes/' /etc/ssh/sshd_config
-sudo systemctl restart ssh
-```
-
-> ⚠️ 这一步会降低安全性：root + 密码 + 公网可达的 22 端口，很容易被爆破。只在内网用，或改成强密码。
+改完 root 密码后，SSH 往往还是登不上（Ubuntu 默认禁止 root 用密码 SSH）。**这是个独立问题，见下方「场景三」专门讲。**
 
 **3. 锁定 / 重新关闭 root（反向操作）**
 
@@ -207,6 +201,64 @@ python vnc_send.py --server 127.0.0.1::5901 --command "mount /dev/sda2 /mnt"
 
 ---
 
+## 场景三：root 密码明明对了，但 SSH 还是登不上
+
+这是最容易让人抓狂的「最后一公里」——**密码没错，SSH 却一直 `Permission denied`**。原因几乎都是 Ubuntu 的 SSH 默认策略，跟密码本身无关。
+
+### 先分清两个概念
+
+- **root 密码**：管的是「能不能用 root 这个账号登录」
+- **SSH 是否允许 root 登录**：是另一套开关，Ubuntu 默认**禁止 root 用密码 SSH**（`PermitRootLogin prohibit-password`）
+
+所以哪怕密码 100% 正确，SSH 也会拒。**先在本机控制台（tty）验证密码对不对，再排查 SSH**——顺序别搞反。
+
+### 排查三步
+
+**第 1 步：确认密码本身没错（绕开 SSH）**
+
+在本机直接登录（图形界面选「未列出」输入 root，或按 `Ctrl+Alt+F3` 切到 tty 文本控制台登录）。能登进去，说明密码对，问题在 SSH；登不进，说明密码还没设对，回到场景一/二。
+
+**第 2 步：放开两个开关**
+
+用能登录的账号（普通用户 sudo，或刚在 tty 登进去的 root）执行：
+
+```bash
+# 允许 root 用密码 SSH 登录
+sudo sed -i 's/^#\?PermitRootLogin.*/PermitRootLogin yes/' /etc/ssh/sshd_config
+
+# 确保密码认证本身是开着的（有些系统会一并关掉）
+sudo sed -i 's/^#\?PasswordAuthentication.*/PasswordAuthentication yes/' /etc/ssh/sshd_config
+
+# 重启 SSH 服务让它生效
+sudo systemctl restart ssh
+```
+
+> 注意 `ssh` 这个服务名：Ubuntu/Debian 是 `ssh`，CentOS/RHEL 是 `sshd`。跑错会提示 `Unit sshd.service not found`，换 `systemctl restart sshd` 即可。
+
+**第 3 步：验证 + 别忘了看错误日志**
+
+```bash
+# 从别的机器（或本机）试着用 root 密码登录
+ssh root@你的IP
+
+# 如果还不行，看服务端日志定位真正原因
+sudo tail -f /var/log/auth.log      # Ubuntu/Debian
+sudo tail -f /var/log/secure        # CentOS/RHEL
+```
+
+日志里常见的关键词：
+- `Failed password for root` → 密码不对（回到第 1 步）
+- `Connection closed by ...` / 无 auth 记录 → 配置没生效（确认重启了服务、改的是对的配置文件）
+
+### 安全提醒
+
+放开 `PermitRootLogin yes` + `PasswordAuthentication yes` 后，**root + 密码 + 公网可达的 22 端口** 会很容易被暴力爆破。建议至少二选一：
+
+1. 设一个**强密码**；
+2. 只在内网用，别把 22 端口暴露到公网（更推荐的做法是根本不开 root 密码 SSH，改用 `sudo -i`）。
+
+---
+
 ## 常见坑（都是实战踩过的）
 
 | 坑 | 原因 | 解决办法 |
@@ -215,7 +267,7 @@ python vnc_send.py --server 127.0.0.1::5901 --command "mount /dev/sda2 /mnt"
 | 应急盘没启动 | `.vmx` 里少了 `present` 行 | 五行配置补齐 |
 | 抢不到 GRUB 菜单 | 部分发行版 GRUB 超时设为 0 | 别抢菜单，直接用应急盘 |
 | **改完 root 还是登不上** | **系统默认没开 root（被锁或不存在）** | 能登录就直接 `sudo passwd root`；进不去才用应急盘：`grep '^root:' /mnt/etc/shadow` 看状态，chpasswd 解锁，缺条目 useradd 补建 |
-| root 能本机登录但 SSH 上不去 | 系统默认禁止 root 用密码 SSH | 改 sshd_config 的 `PermitRootLogin` |
+| **root 密码对但 SSH 上不去** | **Ubuntu 默认禁止 root 密码 SSH** | 见「场景三」：改 `PermitRootLogin yes` + `PasswordAuthentication yes` 并重启 ssh |
 
 ---
 
