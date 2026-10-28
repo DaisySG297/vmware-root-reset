@@ -2,26 +2,9 @@
 
 > 适用于：VMware Workstation / Player 里跑的各种 Linux 虚拟机（Ubuntu / Debian / CentOS 等都行）。
 >
-> 按你的处境选一个场景：
-> - **能登录，只想开 root** → 看「场景二」，一条 `sudo passwd root` 搞定；
-> - **完全登不进** → 看「场景一」，借应急启动盘从外部改密码；
-> - **root 密码对了但 SSH 登不上** → 看「场景三」，是 Ubuntu 的 SSH 默认策略在挡。
-
----
-
-## 应急盘方案原理（场景一专属）
-
-虚拟机的硬盘就是本机上的一个大文件。我们**不碰正常系统**，而是用一个「应急系统」（SystemRescue 启动盘）启动虚拟机，然后把正常系统的硬盘「挂载」进来，直接改写里面的密码文件。改完关机、拔掉应急盘、正常开机，密码就变成你设的新密码了。
-
-整个过程**不破坏任何数据**，也不需要知道原密码。
-
----
-
-## 需要准备什么（场景一）
-
-1. 一台 Windows 主机（装了 VMware Workstation）
-2. 一张应急启动盘镜像：**SystemRescue**（约 1.3 GB，官方免费下载）
-3. Python 3（用来做自动化，省去手动敲键盘的麻烦）
+> 按你的处境选一个：
+> - **还能正常登录** → 看「场景一」，开 root + 设密码 + 开 SSH 一条龙；
+> - **密码忘了、登不进去** → 看「场景二」，借应急启动盘从外部改密码。
 
 ---
 
@@ -29,75 +12,112 @@
 
 很多 Linux 系统（尤其是 **Ubuntu 24.04 用「自动安装 / autoinstall / cloud-init」装出来的**），**root 账号默认是锁定的**——它压根没设密码，日常全靠一个带 sudo 权限的普通用户（安装时填的用户名）来管理。
 
-所以「重置密码」之前，先想清楚你要改的是**哪个账号**：
+所以动手前，先想清楚你要改的是**哪个账号**：
 
 | 你的情况 | 该改谁 | 说明 |
 |---|---|---|
 | 忘了 root 密码，想直接用 root 登录 | root | 但 root 可能被锁，甚至不存在，下面会讲怎么判断 |
 | 忘了普通用户（比如 `ubuntu` / 你设的用户名）的密码 | 那个普通用户 | 这个账号通常**一定存在**，直接改它最简单，改完用 `sudo -i` 照样能拿到 root 权限 |
 
-> 💡 **最省事的建议**：如果系统里有普通用户，改普通用户的密码往往比折腾 root 更简单、更不容易踩坑。只有你**明确就是要 root** 时，才需要额外处理「root 没开」这件事。
+> 💡 **最省事的建议**：如果系统里有普通用户，改普通用户的密码往往比折腾 root 更简单。只有你**明确就是要 root** 时，才需要额外处理「root 没开」这件事。
 
-判断 root 到底什么状态，只需挂载硬盘后看一眼 `/etc/shadow`（具体命令在下面第 3 步）。这里先记住结论：
+判断 root 到底什么状态，看一眼 `/etc/shadow` 里 root 那行的第二个字段：
 
-- 第二个字段是 `!` 或 `*` → root **被锁、没密码**
-- 第二个字段是 `$6$...` / `$y$...` → root **已有密码**
+- `!` 或 `*` → root **被锁、没密码**
+- `$6$...` / `$y$...` → root **已有密码**
 - **压根没有 root 这一行** → root 账号**不存在**
 
-好消息：`chpasswd` 一条命令就能**同时「解锁 + 设密码」**；只有「root 行完全不存在」才需要先 `useradd` 补建（第 3 步会讲）。
+好消息：一条 `chpasswd` / `passwd root` 就能**同时「解锁 + 设密码」**；只有「root 行完全不存在」才需要先 `useradd` 补建。
 
 ---
 
-## 场景二：系统还能登录，只想在系统里开 root
+## 场景一：还能正常登录，开 root + 设密码 + 开 SSH
 
-如果你**还能用某个普通用户正常登录**（知道密码、能 sudo），那根本不用应急盘，一条命令就开好 root 了：
+如果你**还能用某个普通用户正常登录**（知道密码、能 sudo），不用任何应急盘，三条命令就能让 root 直接 SSH 登录。
+
+### 1. 开 root 并设密码
 
 ```bash
 sudo passwd root
 ```
 
-它会先让你输入当前用户的 sudo 密码，再让你给 root 设一个新密码（输两遍）。这一条命令**同时完成「解锁 + 设密码」**，改完 root 就能用了。
+它先让你输入当前用户的 sudo 密码，再让你给 root 设一个新密码（输两遍）。这一条命令**同时完成「解锁 + 设密码」**。
 
-### 几个配套要点
+> 如果报「用户不存在」，说明 `/etc/passwd` 里没 root，先补建再设密码：
+> ```bash
+> sudo useradd -m -s /bin/bash root
+> sudo passwd root
+> ```
 
-**1. 只是想要 root 权限，不一定要真的开 root 账号**
+### 2. 让 root 能通过 SSH 登录
 
-日常用 `sudo -i`（或 `sudo -s`）就能临时切到 root 权限，用完退出。很多时候这比长期开着一个能密码登录的 root 更安全：
+改完密码后，SSH 往往还是登不上——因为 Ubuntu 默认 `PermitRootLogin prohibit-password`（禁止 root 用密码 SSH）。要放开两个开关：
 
 ```bash
-sudo -i      # 直接进入 root shell
-# 干完事
+# 允许 root 用密码 SSH 登录
+sudo sed -i 's/^#\?PermitRootLogin.*/PermitRootLogin yes/' /etc/ssh/sshd_config
+
+# 确保密码认证本身是开着的（有些系统会一并关掉）
+sudo sed -i 's/^#\?PasswordAuthentication.*/PasswordAuthentication yes/' /etc/ssh/sshd_config
+
+# 重启 SSH 服务让它生效
+sudo systemctl restart ssh
+```
+
+> 注意服务名：Ubuntu/Debian 是 `ssh`，CentOS/RHEL 是 `sshd`。跑错会提示 `Unit sshd.service not found`，换 `systemctl restart sshd` 即可。
+
+### 3. 验证
+
+```bash
+# 从别的机器（或本机）用 root 密码登录
+ssh root@你的IP
+```
+
+如果还不行，看服务端日志定位真正原因：
+
+```bash
+sudo tail -f /var/log/auth.log      # Ubuntu/Debian
+sudo tail -f /var/log/secure        # CentOS/RHEL
+```
+
+日志关键词：
+- `Failed password for root` → 密码不对（回第 1 步重新设）
+- `Connection closed by ...` / 无 auth 记录 → 配置没生效（确认重启了服务、改对了文件）
+
+### 配套要点
+
+**只是想要 root 权限，不一定要真的开 root 账号** —— 日常用 `sudo -i` 就能临时切到 root，用完退出，比长期开着一个能密码登录的 root 更安全：
+
+```bash
+sudo -i      # 进入 root shell
 exit         # 退回普通用户
 ```
 
-**2. 想让 root 能通过 SSH 直接登录**
-
-改完 root 密码后，SSH 往往还是登不上（Ubuntu 默认禁止 root 用密码 SSH）。**这是个独立问题，见下方「场景三」专门讲。**
-
-**3. 锁定 / 重新关闭 root（反向操作）**
-
-如果哪天想关掉 root 密码登录（恢复 Ubuntu 默认的锁定态）：
+**反向：锁定 root（关闭密码登录）**
 
 ```bash
-sudo passwd -l root          # 锁定 root，禁止密码登录
+sudo passwd -l root
 ```
 
-**4. root 账号压根不存在（极少数）**
-
-如果 `sudo passwd root` 报「用户不存在」，说明 `/etc/passwd` 里没 root，先补建再设密码：
-
-```bash
-sudo useradd -m -s /bin/bash root
-sudo passwd root
-```
+> ⚠️ **安全提醒**：放开 `PermitRootLogin yes` + `PasswordAuthentication yes` 后，root + 密码 + 公网可达的 22 端口很容易被爆破。建议设强密码，或只在内网用（更推荐根本不开 root 密码 SSH，改用 `sudo -i`）。
 
 ---
 
-## 场景一：完全登不进去，靠应急盘重置
+## 场景二：密码忘了、登不进去，靠应急盘重置
 
-> 下面的「三步走」就是应急盘方案，适合你**连普通用户密码都忘了**、只能从外部硬改密码文件的情况。
+> 下面的「三步走」适合你**连普通用户密码都忘了**、只能从外部硬改密码文件的情况。
 
-## 三步走
+### 原理
+
+虚拟机的硬盘就是本机上的一个大文件。我们**不碰正常系统**，而是用一个「应急系统」（SystemRescue 启动盘）启动虚拟机，然后把正常系统的硬盘「挂载」进来，直接改写里面的密码文件。改完关机、拔掉应急盘、正常开机，密码就变成你设的新密码了。
+
+整个过程**不破坏任何数据**，也不需要知道原密码。
+
+### 需要准备什么
+
+1. 一台 Windows 主机（装了 VMware Workstation）
+2. 一张应急启动盘镜像：**SystemRescue**（约 1.3 GB，官方免费下载）
+3. Python 3（用来做自动化，可选）
 
 ### 第 1 步：下载应急启动盘
 
@@ -157,7 +177,7 @@ grep '^root:' /mnt/etc/shadow
 
 #### root 这一行完全不存在怎么办（极少数情况）
 
-如果 `grep '^root:' /mnt/etc/shadow` 没有任何输出，说明这个系统的 `/etc/shadow` 里没有 root 条目。这时要先把 root 账号补建出来（进 chroot 用系统的 useradd）：
+如果 `grep '^root:' /mnt/etc/shadow` 没有任何输出，说明 `/etc/shadow` 里没有 root 条目。先补建账号（进 chroot 用系统的 useradd）：
 
 ```bash
 # 在 chroot 环境里补建 root 账号（设好家目录和 shell）
@@ -167,7 +187,7 @@ chroot /mnt useradd -m -s /bin/bash root
 echo 'root:新密码' | chroot /mnt chpasswd
 ```
 
-> 注意：`chroot /mnt chpasswd` 本身就是拿 chroot 里系统的加密算法来算哈希，所以哪怕 root 之前不存在，`useradd` + `chpasswd` 也能一步到位。绝大多数机器用不到这一步，只有极端精简的容器/定制镜像才可能碰到。
+> 注意：`chroot /mnt chpasswd` 本身就是拿 chroot 里系统的加密算法来算哈希，所以哪怕 root 之前不存在，`useradd` + `chpasswd` 也能一步到位。绝大多数机器用不到这一步。
 
 最后收尾：
 
@@ -178,12 +198,13 @@ poweroff
 
 把 `.vmx` 里刚才加的那几行删掉，重新开机，用新密码登录即可。
 
+> ⚠️ 重置完成后，**root 可能还是 SSH 登不上**（和场景一第 2 步是同一个坑）。此时你已经能本机登录了，按「场景一」的第 2 步放开 SSH 配置即可。
+
 ---
 
 ## 用脚本自动化（可选）
 
-如果你不想手动敲键盘，本仓库提供了一个自动化脚本 `vnc_send.py`，
-通过 VMware 内置的 VNC 通道自动向虚拟机注入命令。
+如果你不想手动敲键盘，本仓库提供了自动化脚本，通过 VMware 内置的 VNC 通道自动向虚拟机注入命令。
 
 前提：在 `.vmx` 里打开 VMware 的内置 VNC：
 
@@ -201,64 +222,6 @@ python vnc_send.py --server 127.0.0.1::5901 --command "mount /dev/sda2 /mnt"
 
 ---
 
-## 场景三：root 密码明明对了，但 SSH 还是登不上
-
-这是最容易让人抓狂的「最后一公里」——**密码没错，SSH 却一直 `Permission denied`**。原因几乎都是 Ubuntu 的 SSH 默认策略，跟密码本身无关。
-
-### 先分清两个概念
-
-- **root 密码**：管的是「能不能用 root 这个账号登录」
-- **SSH 是否允许 root 登录**：是另一套开关，Ubuntu 默认**禁止 root 用密码 SSH**（`PermitRootLogin prohibit-password`）
-
-所以哪怕密码 100% 正确，SSH 也会拒。**先在本机控制台（tty）验证密码对不对，再排查 SSH**——顺序别搞反。
-
-### 排查三步
-
-**第 1 步：确认密码本身没错（绕开 SSH）**
-
-在本机直接登录（图形界面选「未列出」输入 root，或按 `Ctrl+Alt+F3` 切到 tty 文本控制台登录）。能登进去，说明密码对，问题在 SSH；登不进，说明密码还没设对，回到场景一/二。
-
-**第 2 步：放开两个开关**
-
-用能登录的账号（普通用户 sudo，或刚在 tty 登进去的 root）执行：
-
-```bash
-# 允许 root 用密码 SSH 登录
-sudo sed -i 's/^#\?PermitRootLogin.*/PermitRootLogin yes/' /etc/ssh/sshd_config
-
-# 确保密码认证本身是开着的（有些系统会一并关掉）
-sudo sed -i 's/^#\?PasswordAuthentication.*/PasswordAuthentication yes/' /etc/ssh/sshd_config
-
-# 重启 SSH 服务让它生效
-sudo systemctl restart ssh
-```
-
-> 注意 `ssh` 这个服务名：Ubuntu/Debian 是 `ssh`，CentOS/RHEL 是 `sshd`。跑错会提示 `Unit sshd.service not found`，换 `systemctl restart sshd` 即可。
-
-**第 3 步：验证 + 别忘了看错误日志**
-
-```bash
-# 从别的机器（或本机）试着用 root 密码登录
-ssh root@你的IP
-
-# 如果还不行，看服务端日志定位真正原因
-sudo tail -f /var/log/auth.log      # Ubuntu/Debian
-sudo tail -f /var/log/secure        # CentOS/RHEL
-```
-
-日志里常见的关键词：
-- `Failed password for root` → 密码不对（回到第 1 步）
-- `Connection closed by ...` / 无 auth 记录 → 配置没生效（确认重启了服务、改的是对的配置文件）
-
-### 安全提醒
-
-放开 `PermitRootLogin yes` + `PasswordAuthentication yes` 后，**root + 密码 + 公网可达的 22 端口** 会很容易被暴力爆破。建议至少二选一：
-
-1. 设一个**强密码**；
-2. 只在内网用，别把 22 端口暴露到公网（更推荐的做法是根本不开 root 密码 SSH，改用 `sudo -i`）。
-
----
-
 ## 常见坑（都是实战踩过的）
 
 | 坑 | 原因 | 解决办法 |
@@ -266,8 +229,8 @@ sudo tail -f /var/log/secure        # CentOS/RHEL
 | 改了密码但登录失败 | 键盘注入把大写/数字发错了 | 用 `force_caps=True`（见脚本） |
 | 应急盘没启动 | `.vmx` 里少了 `present` 行 | 五行配置补齐 |
 | 抢不到 GRUB 菜单 | 部分发行版 GRUB 超时设为 0 | 别抢菜单，直接用应急盘 |
-| **改完 root 还是登不上** | **系统默认没开 root（被锁或不存在）** | 能登录就直接 `sudo passwd root`；进不去才用应急盘：`grep '^root:' /mnt/etc/shadow` 看状态，chpasswd 解锁，缺条目 useradd 补建 |
-| **root 密码对但 SSH 上不去** | **Ubuntu 默认禁止 root 密码 SSH** | 见「场景三」：改 `PermitRootLogin yes` + `PasswordAuthentication yes` 并重启 ssh |
+| **改完 root 还是登不上** | **系统默认没开 root（被锁或不存在）** | 能登录就 `sudo passwd root`；进不去才用应急盘：`grep '^root:' /mnt/etc/shadow` 看状态，chpasswd 解锁，缺条目 useradd 补建 |
+| **root 密码对但 SSH 上不去** | **Ubuntu 默认禁止 root 密码 SSH** | 改 `PermitRootLogin yes` + `PasswordAuthentication yes` 并重启 ssh（见场景一第 2 步） |
 
 ---
 
