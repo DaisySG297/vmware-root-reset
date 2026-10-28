@@ -51,6 +51,30 @@ bios.bootOrder = "cdrom"
 
 ### 第 3 步：挂载硬盘 + 改密码
 
+> ⚠️ **先看这里：你的系统可能根本没开 root！**
+>
+> Ubuntu 24.04 用「自动安装（autoinstall / cloud-init）」装出来的系统，**root 账号经常是锁定的**——它压根没设密码，日常全靠一个带 sudo 权限的普通用户（比如安装时填的用户名）来管理。
+>
+> 所以「改 root 密码」之前，得先搞清楚两件事：
+> 1. **root 账号到底存不存在**（有些系统 `/etc/passwd` 里没 root，或者 `/etc/shadow` 里没有 root 这一行）；
+> 2. **root 是不是被锁着**（密码字段是 `!` 或 `*`，表示"禁止用密码登录"）。
+>
+> 判断方法很简单，挂载硬盘后看 `/etc/shadow` 第一行：
+>
+> ```bash
+> sed -n 1p /mnt/etc/shadow
+> ```
+>
+> 这一行长这样（`root:` 后面跟着的第二个字段是关键）：
+>
+> | 第二个字段长啥样 | 含义 | 你该怎么做 |
+> |---|---|---|
+> | `!` 或 `*` | root 被锁，没设密码 | 直接执行下面的 chpasswd，会自动解锁并设密码 |
+> | `$6$...` 或 `$y$...` | 已有密码（可能是旧的） | 同样执行 chpasswd 覆盖成新密码 |
+> | **没有 root 这一行** | root 账号不存在 | 需要先补建账号（见下面「root 不存在怎么办」） |
+>
+> 好消息是：`chpasswd` 一条命令就能**同时完成「解锁 + 设密码」**，不用手动改文件。真正要额外处理的，只有「root 这一行完全不存在」的极端情况。
+
 在应急系统的命令行里依次输入：
 
 ```bash
@@ -60,7 +84,10 @@ lsblk -o NAME,SIZE,FSTYPE,MOUNTPOINT
 # 挂载根分区
 mount /dev/sda2 /mnt
 
-# 改密码（把 新密码 换成你要设的）
+# 先看一眼 root 现在是什么状态（上面表格说的）
+sed -n 1p /mnt/etc/shadow
+
+# 改密码（把 新密码 换成你要设的；这条命令会自动解锁+设密码）
 echo 'root:新密码' | chroot /mnt chpasswd
 ```
 
@@ -71,6 +98,20 @@ sed -n 1p /mnt/etc/shadow
 ```
 
 看到 `root:` 后面是一串 `$6$...` 或 `$y$...` 的乱码（哈希），就说明改好了。
+
+#### root 这一行完全不存在怎么办（极少数情况）
+
+如果 `sed -n 1p /mnt/etc/shadow` 出来的第一行不是 `root:` 开头，说明这个系统的 `/etc/shadow` 里没有 root 条目。这时要先把 root 账号补建出来（进 chroot 用系统的 useradd）：
+
+```bash
+# 在 chroot 环境里补建 root 账号（设好家目录和 shell）
+chroot /mnt useradd -m -s /bin/bash root
+
+# 再设密码
+echo 'root:新密码' | chroot /mnt chpasswd
+```
+
+> 注意：`chroot /mnt chpasswd` 本身就是拿 chroot 里系统的加密算法来算哈希，所以哪怕 root 之前不存在，`useradd` + `chpasswd` 也能一步到位。绝大多数机器用不到这一步，只有极端精简的容器/定制镜像才可能碰到。
 
 最后收尾：
 
@@ -111,6 +152,7 @@ python vnc_send.py --server 127.0.0.1::5901 --command "mount /dev/sda2 /mnt"
 | 改了密码但登录失败 | 键盘注入把大写/数字发错了 | 用 `force_caps=True`（见脚本） |
 | 应急盘没启动 | `.vmx` 里少了 `present` 行 | 五行配置补齐 |
 | 抢不到 GRUB 菜单 | 部分发行版 GRUB 超时设为 0 | 别抢菜单，直接用应急盘 |
+| **改完 root 还是登不上** | **系统默认没开 root（被锁或不存在）** | **先 `sed -n 1p /mnt/etc/shadow` 看状态，用 chpasswd 解锁，缺条目就 useradd 补建** |
 | root 能本机登录但 SSH 上不去 | 系统默认禁止 root 用密码 SSH | 改 sshd_config 的 `PermitRootLogin` |
 
 ---
@@ -129,6 +171,7 @@ python vnc_send.py --server 127.0.0.1::5901 --command "mount /dev/sda2 /mnt"
 vmware-root-reset/
 ├── README.md          # 本说明
 ├── vnc_send.py        # VNC 键盘注入工具（通用）
+├── check_root.py      # 改密码前先检查 root 账号状态
 ├── reset_root.py      # 一键重置 root 密码（封装）
 └── LICENSE            # MIT
 ```

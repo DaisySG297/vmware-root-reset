@@ -57,15 +57,20 @@ def main():
     print("[1/4] 挂载根分区 %s" % args.device)
     send(client, "mount %s /mnt" % args.device)
 
-    print("[2/4] 重设 %s 的密码" % args.user)
+    print("[2/4] 确保 %s 账号存在（Ubuntu 有时没开 root）" % args.user)
+    # 若 root 行不存在，先补建；useradd 在已存在时会报错但无害
+    send(client, "chroot /mnt useradd -m -s /bin/bash %s" % args.user, wait=2.0)
+
+    print("[3/4] 重设 %s 的密码（chpasswd 会自动解锁+设密码）" % args.user)
     cmd = "echo '%s:%s' | chroot /mnt chpasswd" % (args.user, args.password)
     send(client, cmd, wait=3.5)
 
-    print("[3/4] 读回 shadow 验证")
-    send(client, "sed -n 1p /mnt/etc/shadow", wait=2.5)
+    print("[4/4] 读回 shadow 验证")
+    # 用 grep 只抓目标行，比 sed -n 1p 更稳（账号不一定在第一行）
+    send(client, "grep '^%s:' /mnt/etc/shadow" % args.user, wait=2.5)
     client.captureScreen("/tmp/reset_verify.png")
     print("      验证截图已保存 /tmp/reset_verify.png，"
-          "确认 root: 后面是一串 $6$... 或 $y$... 哈希")
+          "确认 %s: 后面是一串 $6$... 或 $y$... 哈希" % args.user)
 
     print("[4/4] 收尾：卸载并关机")
     send(client, "umount /mnt")
